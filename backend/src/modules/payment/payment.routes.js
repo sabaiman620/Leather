@@ -1,6 +1,6 @@
 import Router from "express";
 import { isLoggedIn } from "../../core/middleware/isLoggedIn.js";
-import { isAdmin } from "../../core/middleware/role.middleware.js";
+import { isAdmin } from "../../core/middleware/isAdmin.js";
 import { validate } from "../../core/middleware/validate.js";
 import { createPaymentSchema, updatePaymentStatusSchema } from "../../shared/validators/payment.validator.js";
 import { createPayment, updatePaymentStatus, getPayment } from "./payment.controller.js";

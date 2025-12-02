@@ -31,7 +31,7 @@ const storeAccessToken =(res, accessToken,role = "user") => {
 
     res.cookie(accessTokenName, accessToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production", 
+        secure: isProduction, 
         sameSite: isProduction ? "none" : "lax",
         path: '/',
         maxAge: 15 * 60 * 1000, // 15 minutes

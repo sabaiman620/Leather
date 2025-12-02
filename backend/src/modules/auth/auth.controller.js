@@ -3,25 +3,34 @@ import crypto from "crypto";
 import User from "../../models/User.model.js";
 import { ApiError } from "../../core/utils/api-error.js";
 import { ApiResponse } from "../../core/utils/api-response.js";
-import { userForgotPasswordMailBody } from "../../shared/constants/mail.constant.js";
+import { 
+    userForgotPasswordMailBody, 
+    userVerificationMailBody 
+} from "../../shared/constants/mail.constant.js";
 import { mailTransporter } from "../../shared/helpers/mail.helper.js";
 import { storeLoginCookies, storeAccessToken } from "../../shared/helpers/cookies.helper.js";
 import S3UploadHelper from "../../shared/helpers/s3Upload.js";
 
-//-------------------- REGISTER --------------------//
+//-------------------- REGISTER USER --------------------//
 const registerUser = asyncHandler(async (req, res) => {
     const { userName, userEmail, userPassword, userRole, phoneNumber, userAddress } = req.body;
 
     const existingUser = await User.findOne({ userEmail });
     if (existingUser) throw new ApiError(400, "User already exists");
 
-    let uploadResult = null;
+    let profileImageKey = null;
+    let profileSignedUrl = null;
+
     if (req.file) {
         try {
-            uploadResult = await S3UploadHelper.uploadFile(req.file, "avatar");
+            const uploadResult = await S3UploadHelper.uploadFile(req.file, "user-profile");
+            if (uploadResult?.key) {
+                profileImageKey = uploadResult.key;
+                profileSignedUrl = await S3UploadHelper.getSignedUrl(uploadResult.key);
+            }
         } catch (error) {
-            console.error("Error uploading avatar:", error);
-            throw new ApiError(500, "Error uploading avatar to S3");
+            console.error("Error uploading image:", error);
+            throw new ApiError(500, "Error uploading profile image");
         }
     }
 
@@ -32,24 +41,61 @@ const registerUser = asyncHandler(async (req, res) => {
         userRole: userRole || "buyer",
         phoneNumber,
         userAddress,
-        userIsVerified: userRole === "admin" ? true : false, // auto-verify admin
-        profileImage: uploadResult ? uploadResult.key : undefined
+        userIsVerified:false, //userRole === "admin" ? true : false,
+        ...(profileImageKey && { profileImage: profileImageKey })
     });
 
-    const userResponse = user.toObject();
-    delete userResponse.userPassword;
+    if (!user) throw new ApiError(400, "User creation failed");
 
-    if (uploadResult) {
-        try {
-            userResponse.avatarUrl = await S3UploadHelper.getSignedUrl(uploadResult.key);
-        } catch {
-            userResponse.avatarUrl = null;
-        }
+    // ---------------- Email Verification Token ---------------- //
+    if (userRole !== "admin") {
+        const { hashedToken, tokenExpiry } = user.generateTemporaryToken();
+
+        user.userVerificationToken = hashedToken;
+        user.userVerificationTokenExpiry = tokenExpiry;
+        await user.save();
+
+        const verificationLink = `${process.env.CLIENT_URL}/api/v1/auth/verify/${hashedToken}`;
+
+        await mailTransporter.sendMail({
+            from: process.env.MAILTRAP_SENDEREMAIL,
+            to: userEmail,
+            subject: "Verify your email",
+            html: userVerificationMailBody(userName, verificationLink)
+        });
     }
 
-    return res
-        .status(201)
-        .json(new ApiResponse(201, userResponse, "User registered successfully"));
+    const response = {
+        userId: user._id,
+        userName: user.userName,
+        userEmail: user.userEmail,
+        userRole: user.userRole,
+        phoneNumber: user.phoneNumber,
+        userAddress: user.userAddress,
+        ...(profileSignedUrl && { profileImageUrl: profileSignedUrl }),
+    };
+
+    return res.status(201).json(new ApiResponse(201, response, "User registered successfully"));
+});
+
+//-------------------- VERIFY EMAIL --------------------//
+const verifyUserEmail = asyncHandler(async (req, res) => {
+    const { token } = req.params;
+
+    const user = await User.findOne({
+        userVerificationToken: token,
+        userVerificationTokenExpiry: { $gt: Date.now() }
+    });
+
+    if (!user) throw new ApiError(400, "Invalid or expired verification token");
+
+    user.userIsVerified = true;
+    user.userVerificationToken = null;
+    user.userVerificationTokenExpiry = null;
+
+    await user.save();
+
+    return res.status(200).json(new ApiResponse(200, {}, "Email verified successfully"));
 });
 
 //-------------------- LOGIN --------------------//
@@ -72,13 +118,11 @@ const loginUser = asyncHandler(async (req, res) => {
     user.userRefreshToken = refreshToken;
     await user.save();
 
-    let signedProfileImageUrl = null;
+    let profileSignedUrl = null;
     if (user.profileImage) {
         try {
-            signedProfileImageUrl = await S3UploadHelper.getSignedUrl(user.profileImage);
-        } catch (err) {
-            signedProfileImageUrl = null;
-        }
+            profileSignedUrl = await S3UploadHelper.getSignedUrl(user.profileImage);
+        } catch {}
     }
 
     const response = {
@@ -88,20 +132,20 @@ const loginUser = asyncHandler(async (req, res) => {
             userEmail: user.userEmail,
             userRole: user.userRole,
             phoneNumber: user.phoneNumber,
-            profileImage: signedProfileImageUrl || null
+            userAddress: user.userAddress,
+            profileImage: profileSignedUrl
         },
         tokens: { accessToken, refreshToken }
     };
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, response, "User logged in successfully"));
+    return res.status(200).json(new ApiResponse(200, response, "Login successful"));
 });
 
 //-------------------- LOGOUT --------------------//
 const logoutUser = asyncHandler(async (req, res) => {
     const userId = req.user?._id;
-    if (!userId) throw new ApiError(401, "User not authenticated");
+
+    if (!userId) throw new ApiError(401, "Not authenticated");
 
     const user = await User.findById(userId);
     if (!user) throw new ApiError(404, "User not found");
@@ -112,25 +156,22 @@ const logoutUser = asyncHandler(async (req, res) => {
     res.clearCookie("accessToken");
     res.clearCookie("refreshToken");
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, {}, "User logged out successfully"));
+    return res.status(200).json(new ApiResponse(200, {}, "Logged out successfully"));
 });
 
-//-------------------- REFRESH TOKEN --------------------//
+//-------------------- REFRESH ACCESS TOKEN --------------------//
 const getAccessToken = asyncHandler(async (req, res) => {
     const { refreshToken } = req.cookies;
-    if (!refreshToken) throw new ApiError(400, "Refresh token not found");
+    if (!refreshToken) throw new ApiError(400, "Refresh token missing");
 
     const user = await User.findOne({ userRefreshToken: refreshToken });
     if (!user) throw new ApiError(400, "Invalid refresh token");
 
-    const accessToken = user.generateAccessToken();
-    storeAccessToken(res, accessToken, user.userRole);
+    const newAccessToken = user.generateAccessToken();
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, { accessToken }, "Access token generated successfully"));
+    storeAccessToken(res, newAccessToken, user.userRole);
+
+    return res.status(200).json(new ApiResponse(200, { accessToken: newAccessToken }, "New access token issued"));
 });
 
 //-------------------- FORGOT PASSWORD --------------------//
@@ -143,20 +184,19 @@ const forgotPasswordMail = asyncHandler(async (req, res) => {
     const { unHashedToken, hashedToken, tokenExpiry } = user.generateTemporaryToken();
     user.userPasswordResetToken = hashedToken;
     user.userPasswordExpirationDate = tokenExpiry;
+
     await user.save();
 
-    const passwordResetLink = `${process.env.BASE_URL}/api/v1/auth/reset-password/${unHashedToken}`;
+    const resetLink = `${process.env.BASE_URL}/api/v1/auth/reset-password/${unHashedToken}`;
 
     await mailTransporter.sendMail({
         from: process.env.MAILTRAP_SENDEREMAIL,
         to: userEmail,
-        subject: "Forgot password",
-        html: userForgotPasswordMailBody(user.userName, passwordResetLink)
+        subject: "Password Reset",
+        html: userForgotPasswordMailBody(user.userName, resetLink),
     });
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, { passwordResetLink }, "Password reset link sent successfully"));
+    return res.status(200).json(new ApiResponse(200, { resetLink }, "Password reset link sent"));
 });
 
 //-------------------- RESET PASSWORD --------------------//
@@ -170,16 +210,24 @@ const resetPassword = asyncHandler(async (req, res) => {
         userPasswordResetToken: hashedToken,
         userPasswordExpirationDate: { $gt: Date.now() }
     });
-    if (!user) throw new ApiError(400, "Invalid or expired password reset token");
+
+    if (!user) throw new ApiError(400, "Invalid or expired reset token");
 
     user.userPassword = userPassword;
     user.userPasswordResetToken = null;
     user.userPasswordExpirationDate = null;
+
     await user.save();
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, {}, "Password reset successfully"));
+    return res.status(200).json(new ApiResponse(200, {}, "Password reset successfully"));
 });
 
-export { registerUser, loginUser, logoutUser, getAccessToken, forgotPasswordMail, resetPassword };
+export {
+    registerUser,
+    verifyUserEmail,
+    loginUser,
+    logoutUser,
+    getAccessToken,
+    forgotPasswordMail,
+    resetPassword
+};

@@ -1,6 +1,6 @@
 import Router from "express";
 import { isLoggedIn } from "../../core/middleware/isLoggedIn.js";
-import { isAdmin } from "../../core/middleware/role.middleware.js";
+import { isAdmin } from "../../core/middleware/isAdmin.js";
 import { validate } from "../../core/middleware/validate.js";
 import { createOrderSchema, updateOrderStatusSchema } from "../../shared/validators/order.validator.js";
 import { createOrder, getUserOrders, getOrder, getAllOrders, updateOrderStatus } from "./order.controller.js";

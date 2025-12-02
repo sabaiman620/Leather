@@ -1,7 +1,7 @@
 import Router from "express";
 import { upload } from "../../core/middleware/multer.js";
 import { isLoggedIn } from "../../core/middleware/isLoggedIn.js";
-import { isAdmin } from "../../core/middleware/role.middleware.js";
+import { isAdmin } from "../../core/middleware/isAdmin.js";
 import { validate } from "../../core/middleware/validate.js";
 import { createReviewSchema } from "../../shared/validators/review.validator.js";
 import { createReview, getReviews, approveReview, deleteReview } from "./review.controller.js";
