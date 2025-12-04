@@ -83,10 +83,8 @@ const getAllProducts = asyncHandler(async (req, res) => {
 
     const productsWithSignedUrls = await Promise.all(
         products.map(async (p) => {
-            const imageUrls = await Promise.all(
-                p.image.map((key) => S3UploadHelper.getSignedUrl(key))
-            );
-            return { ...p._doc, productImageUrls: imageUrls };
+            const imageUrl = p.image ? await S3UploadHelper.getSignedUrl(p.image) : "";
+            return { ...p._doc, productImageUrl: imageUrl };
         })
     );
 
@@ -98,13 +96,11 @@ const getProductById = asyncHandler(async (req, res) => {
     const product = await Product.findOne({ _id: req.params.id, isActive: true });
     if (!product) throw new ApiError(404, "Product not found or inactive");
 
-    const signedUrls = await Promise.all(
-        product.image.map((key) => S3UploadHelper.getSignedUrl(key))
-    );
+    const imageUrl = product.image ? await S3UploadHelper.getSignedUrl(product.image) : "";
 
     return res.status(200).json(new ApiResponse(
         200,
-        { product, productImageUrls: signedUrls },
+        { product, productImageUrl: imageUrl },
         "Success"
     ));
 });
@@ -116,8 +112,8 @@ const getByCategory = asyncHandler(async (req, res) => {
 
     const productsWithUrls = await Promise.all(
         products.map(async (p) => {
-            const urls = await Promise.all(p.image.map((key) => S3UploadHelper.getSignedUrl(key)));
-            return { ...p._doc, productImageUrls: urls };
+            const imageUrl = p.image ? await S3UploadHelper.getSignedUrl(p.image) : "";
+            return { ...p._doc, productImageUrl: imageUrl };
         })
     );
 
@@ -130,20 +126,19 @@ const searchProductByName = asyncHandler(async (req, res) => {
     if (!name) throw new ApiError(400, "Search query is required");
 
     const products = await Product.find({
-        name: { $regex: name, $options: "i" },
+        productName: { $regex: name, $options: "i" },
         isActive: true
     });
 
     const productsWithUrls = await Promise.all(
         products.map(async (p) => {
-            const urls = await Promise.all(p.image.map((key) => S3UploadHelper.getSignedUrl(key)));
-            return { ...p._doc, productImageUrls: urls };
+            const imageUrl = p.image ? await S3UploadHelper.getSignedUrl(p.image) : "";
+            return { ...p._doc, productImageUrl: imageUrl };
         })
     );
 
     return res.status(200).json(new ApiResponse(200, productsWithUrls, "Search results"));
 });
-
 // -------DELETE PRODUCT------ //
 const deleteProduct = asyncHandler(async (req, res) => {
     const product = await Product.findByIdAndDelete(req.params.id);
